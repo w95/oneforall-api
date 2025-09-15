@@ -1,0 +1,9 @@
+services:
+  oneforall-api:
+    build: .
+    volumes:
+      - ./results:/app/OneForAll/results
+    ports:
+      - "9403:9403"
+    environment:
+      - PYTHONUNBUFFERED=1
