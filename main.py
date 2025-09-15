@@ -18,6 +18,7 @@ app = FastAPI(title="OneForAll Scanner API", version="1.0.0")
 class ScanRequest(BaseModel):
     url: str
     http_requests: bool = False
+    check_alive: bool = False
 
 class ScanResponse(BaseModel):
     results: List[Dict[Any, Any]]
@@ -26,7 +27,7 @@ class ScanResponse(BaseModel):
 
 
 @app.post("/scan", response_model=ScanResponse)
-async def scan_domain(url: str = Form(...), http_requests: bool = Form(False)):
+async def scan_domain(url: str = Form(...), http_requests: bool = Form(False), check_alive: bool = Form(False)):
     """
     Scan a domain using OneForAll and return the results as JSON
     """
@@ -65,6 +66,10 @@ async def scan_domain(url: str = Form(...), http_requests: bool = Form(False)):
             cmd.extend(["--req", "True"])
         else:
             cmd.extend(["--req", "False"])
+        
+        # Add alive check parameter
+        if check_alive:
+            cmd.extend(["--alive", "True"])
             
         cmd.append("run")
         
