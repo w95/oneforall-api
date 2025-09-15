@@ -1,0 +1,140 @@
+name: Check Upstream OneForAll Release
+
+on:
+  schedule:
+    # Run every Monday at 9:00 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual trigger for testing
+
+env:
+  UPSTREAM_REPO: shmilylty/OneForAll
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      new-release: ${{ steps.check.outputs.new-release }}
+      release-tag: ${{ steps.check.outputs.release-tag }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/releases/latest" | jq -r '.tag_name')
+          echo "latest-release=$LATEST_RELEASE" >> $GITHUB_OUTPUT
+          echo "Latest upstream release: $LATEST_RELEASE"
+
+      - name: Get current local version
+        id: local
+        run: |
+          # Check if we have any tags, if not use v0.0.0 as baseline
+          if git tag --list | grep -q .; then
+            CURRENT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          else
+            CURRENT_VERSION="v0.0.0"
+          fi
+          echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current local version: $CURRENT_VERSION"
+
+      - name: Compare versions
+        id: check
+        run: |
+          UPSTREAM_VERSION="${{ steps.upstream.outputs.latest-release }}"
+          CURRENT_VERSION="${{ steps.local.outputs.current-version }}"
+          
+          echo "Comparing versions:"
+          echo "  Upstream: $UPSTREAM_VERSION"
+          echo "  Current:  $CURRENT_VERSION"
+          
+          if [ "$UPSTREAM_VERSION" != "$CURRENT_VERSION" ]; then
+            echo "New release detected!"
+            echo "new-release=true" >> $GITHUB_OUTPUT
+            echo "release-tag=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "No new release found"
+            echo "new-release=false" >> $GITHUB_OUTPUT
+          fi
+
+  update-and-build:
+    needs: check-release
+    if: needs.check-release.outputs.new-release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: write
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Create new tag
+        run: |
+          NEW_TAG="${{ needs.check-release.outputs.release-tag }}"
+          echo "Creating new tag: $NEW_TAG"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create and push the new tag
+          git tag -a "$NEW_TAG" -m "Update to OneForAll $NEW_TAG"
+          git push origin "$NEW_TAG"
+
+      - name: Trigger Docker build workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const result = await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docker-publish.yml',
+              ref: '${{ needs.check-release.outputs.release-tag }}'
+            });
+            console.log('Docker build workflow triggered:', result.status);
+
+      - name: Create release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.check-release.outputs.release-tag }}
+          release_name: Release ${{ needs.check-release.outputs.release-tag }}
+          body: |
+            Automated release to sync with upstream OneForAll ${{ needs.check-release.outputs.release-tag }}
+            
+            This release includes updates from the upstream repository:
+            https://github.com/${{ env.UPSTREAM_REPO }}/releases/tag/${{ needs.check-release.outputs.release-tag }}
+          draft: false
+          prerelease: false
+
+  notify:
+    needs: [check-release, update-and-build]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Notify results
+        run: |
+          if [ "${{ needs.check-release.outputs.new-release }}" == "true" ]; then
+            if [ "${{ needs.update-and-build.result }}" == "success" ]; then
+              echo "✅ Successfully updated to OneForAll ${{ needs.check-release.outputs.release-tag }} and triggered Docker build"
+            else
+              echo "❌ Failed to update or trigger Docker build for OneForAll ${{ needs.check-release.outputs.release-tag }}"
+              exit 1
+            fi
+          else
+            echo "ℹ️ No new OneForAll release found - no action needed"
+          fi

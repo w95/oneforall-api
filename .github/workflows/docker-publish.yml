@@ -11,6 +11,7 @@ on:
     branches:
       - master
       - main
+  workflow_dispatch: # Allow manual and automated triggers
 
 env:
   REGISTRY: ghcr.io
